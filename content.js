@@ -17,6 +17,13 @@
         highlightColor: 'rgba(218, 119, 86, 0.15)', // Claude's orange accent
       };
     }
+    if (host === 'gemini.google.com') {
+      return {
+        // Gemini wraps each user prompt in a .query-text element
+        selectors: ['.query-text', 'user-query .query-content'],
+        highlightColor: 'rgba(66, 133, 244, 0.15)', // Google blue accent
+      };
+    }
     // ChatGPT / OpenAI
     return {
       selectors: ['[data-message-author-role="user"]'],
