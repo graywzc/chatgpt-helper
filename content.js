@@ -7,11 +7,30 @@
   let toggle = null;
   let observer = null;
 
+  function getSiteConfig() {
+    const host = location.hostname;
+    if (host === 'claude.ai') {
+      return {
+        // Claude marks human turns with data-testid="user-message"
+        // Fallback: any element with the human/user message role in the conversation
+        selectors: ['[data-testid="user-message"]'],
+        highlightColor: 'rgba(218, 119, 86, 0.15)', // Claude's orange accent
+      };
+    }
+    // ChatGPT / OpenAI
+    return {
+      selectors: ['[data-message-author-role="user"]'],
+      highlightColor: 'rgba(99, 102, 241, 0.15)',
+    };
+  }
+
   function getHumanMessages() {
-    // ChatGPT marks user messages with data-message-author-role="user"
-    return Array.from(
-      document.querySelectorAll('[data-message-author-role="user"]')
-    );
+    const { selectors } = getSiteConfig();
+    for (const sel of selectors) {
+      const els = Array.from(document.querySelectorAll(sel));
+      if (els.length > 0) return els;
+    }
+    return [];
   }
 
   function truncate(text, maxLen = 80) {
@@ -22,8 +41,9 @@
   function scrollToMessage(el) {
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     // Brief highlight
+    const { highlightColor } = getSiteConfig();
     el.style.transition = 'background 0.3s';
-    el.style.background = 'rgba(99,102,241,0.15)';
+    el.style.background = highlightColor;
     setTimeout(() => { el.style.background = ''; }, 1200);
   }
 
