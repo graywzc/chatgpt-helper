@@ -85,6 +85,14 @@ test('manifest includes storage permission and loads the shared core before the 
   assert.deepEqual(manifest.content_scripts[0].js, ['navigator-core.js', 'content.js']);
 });
 
+test('content script stores conversation indexes in chrome.storage.local', () => {
+  const contentPath = path.join(__dirname, '..', 'content.js');
+  const contentSource = fs.readFileSync(contentPath, 'utf8');
+
+  assert.match(contentSource, /function getCacheStorageArea\(\)\s*\{\s*return chrome\.storage\?\.local \?\? null;\s*\}/);
+  assert.doesNotMatch(contentSource, /chrome\.storage\?\.session/);
+});
+
 test('popup includes the auto-show toggle controls', () => {
   const popupPath = path.join(__dirname, '..', 'popup.html');
   const popupHtml = fs.readFileSync(popupPath, 'utf8');

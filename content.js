@@ -59,7 +59,7 @@
   }
 
   function getCacheStorageArea() {
-    return chrome.storage?.session ?? chrome.storage?.local ?? null;
+    return chrome.storage?.local ?? null;
   }
 
   function storageGet(area, keys) {
@@ -205,6 +205,31 @@
     status.className = 'cgpt-nav-empty';
     status.textContent = message;
     list.appendChild(status);
+  }
+
+  function getSidebarStatusText() {
+    return sidebar?.querySelector('#cgpt-nav-list .cgpt-nav-empty')?.textContent?.trim() ?? '';
+  }
+
+  function shouldRetryVisibleSidebar() {
+    if (!sidebar?.classList.contains('cgpt-nav-visible')) return false;
+    if (isScanning) return false;
+    if (messageData.length > 0) return false;
+
+    const statusText = getSidebarStatusText();
+    return statusText === 'Scanning messages…' || statusText === 'Loading conversation…';
+  }
+
+  async function refreshVisibleSidebarIfNeeded() {
+    if (!shouldRetryVisibleSidebar()) return;
+
+    await loadCachedMessages();
+    if (messageData.length > 0) {
+      buildSidebar();
+      return;
+    }
+
+    await showSidebar();
   }
 
   function handleUrlChange() {
@@ -512,7 +537,12 @@
       if (!navCore.shouldProcessConversationUpdate(currentConversationKey, getConversationKey())) return;
       buildSidebar();
     } catch (error) {
-      if (error?.message === 'Scan cancelled') return;
+      if (error?.message === 'Scan cancelled') {
+        if (!sidebar.classList.contains('cgpt-nav-visible')) return;
+        renderStatus('Loading conversation…');
+        void refreshVisibleSidebarIfNeeded();
+        return;
+      }
       console.error('AI Chat Navigator scan failed', error);
       renderStatus('Could not scan messages. Close and reopen the panel to retry.');
     }
@@ -681,6 +711,13 @@
 
   window.addEventListener('popstate', handleUrlChange);
   window.addEventListener('hashchange', handleUrlChange);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    void refreshVisibleSidebarIfNeeded();
+  });
+  window.addEventListener('focus', () => {
+    void refreshVisibleSidebarIfNeeded();
+  });
 
   new MutationObserver(handleUrlChange).observe(document.body, { childList: true, subtree: true });
   window.setInterval(handleUrlChange, 500);
