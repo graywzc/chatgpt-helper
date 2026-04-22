@@ -132,13 +132,14 @@ This repo does not currently include an automated test runner, so this file trac
 - Issue:
   ChatGPT revisits could still rescan because the cache lived only in content-script memory.
 - Fix summary:
-  Conversation caches now persist through extension storage (`chrome.storage.session` with `local` fallback), so revisiting a topic can survive content-script restarts.
+  Conversation caches now persist through `chrome.storage.local`, so revisiting a topic can survive content-script restarts and full Chrome restarts.
 - Test steps:
   1. Open a ChatGPT conversation and let the sidebar finish scanning.
   2. Switch to another ChatGPT conversation.
   3. Return to the original conversation.
   4. Confirm the sidebar restores from cache instead of performing another full scan.
-  5. Refresh the page if needed and confirm the cached conversation still restores within the same browser session.
+  5. Refresh the page if needed and confirm the cached conversation still restores.
+  6. Fully close Chrome, reopen it, return to the same conversation, and confirm the cached conversation still restores.
 
 ## Smoke test
 
