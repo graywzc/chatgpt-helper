@@ -7,24 +7,23 @@
   let toggle = null;
   let observer = null;
 
+  // Persists across sidebar open/close; reset on SPA navigation.
+  let messageData = []; // { id: string|null, text: string }[]
+
   function getSiteConfig() {
     const host = location.hostname;
     if (host === 'claude.ai') {
       return {
-        // Claude marks human turns with data-testid="user-message"
-        // Fallback: any element with the human/user message role in the conversation
         selectors: ['[data-testid="user-message"]'],
-        highlightColor: 'rgba(218, 119, 86, 0.15)', // Claude's orange accent
+        highlightColor: 'rgba(218, 119, 86, 0.15)',
       };
     }
     if (host === 'gemini.google.com') {
       return {
-        // Gemini wraps each user prompt in a .query-text element
         selectors: ['.query-text', 'user-query .query-content'],
-        highlightColor: 'rgba(66, 133, 244, 0.15)', // Google blue accent
+        highlightColor: 'rgba(66, 133, 244, 0.15)',
       };
     }
-    // ChatGPT / OpenAI
     return {
       selectors: ['[data-message-author-role="user"]'],
       highlightColor: 'rgba(99, 102, 241, 0.15)',
@@ -45,21 +44,100 @@
     return clean.length > maxLen ? clean.slice(0, maxLen) + '…' : clean;
   }
 
-  function scrollToMessage(el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    // Brief highlight
+  // Finds the scrollable container that holds the conversation.
+  function findScrollContainer() {
+    const { selectors } = getSiteConfig();
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el) {
+        let node = el.parentElement;
+        while (node && node !== document.body) {
+          const { overflowY } = window.getComputedStyle(node);
+          if (overflowY === 'auto' || overflowY === 'scroll') return node;
+          node = node.parentElement;
+        }
+      }
+    }
+    return document.documentElement;
+  }
+
+  // Returns the stable message ID attribute if present (ChatGPT sets data-message-id).
+  function getMessageId(el) {
+    return el.dataset.messageId
+      || el.closest('[data-message-id]')?.dataset.messageId
+      || null;
+  }
+
+  // Collects all user messages by scrolling the conversation from top to bottom.
+  // Restores the original scroll position when done.
+  async function scanMessages() {
+    const container = findScrollContainer();
+    const savedTop = container.scrollTop;
+    const seenKeys = new Set();
+
+    const collect = () => {
+      for (const el of getHumanMessages()) {
+        const id = getMessageId(el);
+        // Use id when available; fall back to text prefix as a dedup key.
+        const key = id ?? el.textContent.trim().slice(0, 80);
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
+          messageData.push({ id, text: el.innerText || el.textContent });
+        }
+      }
+    };
+
+    container.scrollTop = 0;
+    await new Promise(r => setTimeout(r, 150));
+
+    let lastTop = -1;
+    while (container.scrollTop !== lastTop) {
+      collect();
+      lastTop = container.scrollTop;
+      container.scrollTop += Math.max(container.clientHeight, 400);
+      await new Promise(r => setTimeout(r, 100));
+    }
+    collect(); // final pass at the bottom
+
+    container.scrollTop = savedTop;
+  }
+
+  async function scrollToMessage(id, index) {
     const { highlightColor } = getSiteConfig();
-    el.style.transition = 'background 0.3s';
-    el.style.background = highlightColor;
-    setTimeout(() => { el.style.background = ''; }, 1200);
+
+    const highlight = el => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.style.transition = 'background 0.3s';
+      el.style.background = highlightColor;
+      setTimeout(() => { el.style.background = ''; }, 1200);
+    };
+
+    if (id) {
+      // Element may already be in the DOM (not virtualized out).
+      let el = document.querySelector(`[data-message-id="${CSS.escape(id)}"]`);
+      if (el) { highlight(el); return; }
+
+      // Scroll to the approximate position to trigger the virtual renderer.
+      const container = findScrollContainer();
+      const fraction = messageData.length > 1 ? index / (messageData.length - 1) : 0;
+      container.scrollTop = fraction * container.scrollHeight;
+      await new Promise(r => setTimeout(r, 300));
+
+      el = document.querySelector(`[data-message-id="${CSS.escape(id)}"]`);
+      if (el) { highlight(el); return; }
+    }
+
+    // Final fallback: just scroll to the proportional position.
+    const container = findScrollContainer();
+    const fraction = messageData.length > 1 ? index / (messageData.length - 1) : 0;
+    container.scrollTop = fraction * container.scrollHeight;
   }
 
   function buildSidebar() {
-    const messages = getHumanMessages();
     const list = sidebar.querySelector('#cgpt-nav-list');
     list.innerHTML = '';
 
-    if (messages.length === 0) {
+    if (messageData.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'cgpt-nav-empty';
       empty.textContent = 'No messages yet.';
@@ -67,8 +145,7 @@
       return;
     }
 
-    messages.forEach((msgEl, i) => {
-      const text = msgEl.innerText || msgEl.textContent || '';
+    messageData.forEach(({ id, text }, i) => {
       const item = document.createElement('button');
       item.className = 'cgpt-nav-item';
       item.title = text.trim();
@@ -83,7 +160,7 @@
 
       item.appendChild(num);
       item.appendChild(label);
-      item.addEventListener('click', () => scrollToMessage(msgEl));
+      item.addEventListener('click', () => scrollToMessage(id, i));
       list.appendChild(item);
     });
   }
@@ -139,10 +216,17 @@
     document.body.appendChild(toggle);
   }
 
-  function showSidebar() {
-    buildSidebar();
+  async function showSidebar() {
     sidebar.classList.add('cgpt-nav-visible');
     toggle.classList.add('cgpt-nav-active');
+
+    // Show a loading placeholder while we scan.
+    const list = sidebar.querySelector('#cgpt-nav-list');
+    list.innerHTML = '<div class="cgpt-nav-empty">Scanning messages…</div>';
+
+    messageData = [];
+    await scanMessages();
+    buildSidebar();
   }
 
   function hideSidebar() {
@@ -154,10 +238,21 @@
 
   function startObserver() {
     observer = new MutationObserver(() => {
-      // Debounce and skip if the mutation came from our own sidebar
       clearTimeout(rebuildTimer);
       rebuildTimer = setTimeout(() => {
         if (!sidebar.classList.contains('cgpt-nav-visible')) return;
+        // Merge any newly visible messages into messageData without rescanning.
+        const seenKeys = new Set(
+          messageData.map(m => m.id ?? m.text.trim().slice(0, 80))
+        );
+        for (const el of getHumanMessages()) {
+          const id = getMessageId(el);
+          const key = id ?? el.textContent.trim().slice(0, 80);
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            messageData.push({ id, text: el.innerText || el.textContent });
+          }
+        }
         observer.disconnect();
         buildSidebar();
         observer.observe(document.body, { childList: true, subtree: true });
@@ -173,14 +268,13 @@
     startObserver();
   }
 
-  // Wait for the page to be ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
     init();
   }
 
-  // Re-init on SPA navigation (ChatGPT is a SPA) — only watch direct children of body
+  // Re-init on SPA navigation.
   let lastUrl = location.href;
   new MutationObserver(() => {
     if (location.href !== lastUrl) {
@@ -191,6 +285,7 @@
         const existingToggle = document.getElementById(TOGGLE_ID);
         if (existingToggle) existingToggle.remove();
         if (observer) observer.disconnect();
+        messageData = [];
         init();
       }, 800);
     }
