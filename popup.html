@@ -36,14 +36,101 @@
     .tip strong {
       color: #cdd6f4;
     }
+    .setting {
+      margin-top: 14px;
+      padding: 12px;
+      background: #313244;
+      border-radius: 8px;
+    }
+    .setting-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .setting-copy {
+      flex: 1;
+    }
+    .setting-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #cdd6f4;
+      margin-bottom: 4px;
+    }
+    .setting-help {
+      font-size: 11px;
+      color: #a6adc8;
+      line-height: 1.4;
+    }
+    .switch {
+      position: relative;
+      display: inline-flex;
+      width: 38px;
+      height: 22px;
+      flex-shrink: 0;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      inset: 0;
+      cursor: pointer;
+      background: #585b70;
+      border-radius: 999px;
+      transition: background 0.2s ease;
+    }
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      left: 3px;
+      top: 3px;
+      background: #eff1f5;
+      border-radius: 50%;
+      transition: transform 0.2s ease;
+    }
+    .switch input:checked + .slider {
+      background: #89b4fa;
+    }
+    .switch input:checked + .slider::before {
+      transform: translateX(16px);
+    }
+    .switch input:disabled + .slider {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+    .status {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #bac2de;
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
   <h1>AI Chat Navigator</h1>
   <p>Adds a sidebar to ChatGPT and Claude listing all your messages for quick navigation.</p>
+  <div class="setting">
+    <div class="setting-row">
+      <div class="setting-copy">
+        <div class="setting-title">Show sidebar automatically</div>
+        <div class="setting-help">Open the navigator as soon as a supported chat page loads.</div>
+      </div>
+      <label class="switch" for="auto-show-toggle">
+        <input id="auto-show-toggle" type="checkbox" />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div id="auto-show-status" class="status">Loading setting…</div>
+  </div>
   <div class="tip">
     <strong>How to use:</strong><br/>
     Open any ChatGPT or Claude conversation and click the <strong>list icon</strong> button in the bottom-right corner to toggle the sidebar.
   </div>
+  <script src="popup.js"></script>
 </body>
 </html>

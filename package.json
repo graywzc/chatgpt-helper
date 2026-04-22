@@ -1,0 +1,7 @@
+{
+  "name": "chatgpt-helper",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  }
+}

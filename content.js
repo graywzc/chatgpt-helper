@@ -2,13 +2,21 @@
   const SIDEBAR_ID = 'cgpt-nav-sidebar';
   const TOGGLE_ID = 'cgpt-nav-toggle';
   const MAIN_SHIFT_CLASS = 'cgpt-nav-shifted';
+  const AUTO_SHOW_KEY = 'cgptNavAutoShowSidebar';
+  const navCore = globalThis.CGPTNavCore;
 
   let sidebar = null;
   let toggle = null;
   let observer = null;
+  let autoShowEnabled = false;
+  const conversationCache = new Map();
+  const CACHE_STORAGE_PREFIX = 'cgptNavCache:';
+  let currentConversationKey = navCore.getConversationKeyFromUrl(location.href);
 
   // Persists across sidebar open/close; reset on SPA navigation.
-  let messageData = []; // { id: string|null, text: string }[]
+  let messageData = []; // { key: string, id: string|null, text: string, scrollTop: number, anchorTop: number }[]
+  let isScanning = false;
+  let activeScanToken = 0;
 
   function getSiteConfig() {
     const host = location.hostname;
@@ -20,6 +28,7 @@
     }
     if (host === 'gemini.google.com') {
       return {
+        rootSelector: 'main',
         selectors: ['.query-text', 'user-query .query-content'],
         highlightColor: 'rgba(66, 133, 244, 0.15)',
       };
@@ -31,9 +40,10 @@
   }
 
   function getHumanMessages() {
-    const { selectors } = getSiteConfig();
+    const { selectors, rootSelector } = getSiteConfig();
+    const root = rootSelector ? document.querySelector(rootSelector) : document;
     for (const sel of selectors) {
-      const els = Array.from(document.querySelectorAll(sel));
+      const els = Array.from((root || document).querySelectorAll(sel)).filter(isVisibleMessage);
       if (els.length > 0) return els;
     }
     return [];
@@ -42,6 +52,59 @@
   function truncate(text, maxLen = 80) {
     const clean = text.replace(/\s+/g, ' ').trim();
     return clean.length > maxLen ? clean.slice(0, maxLen) + '…' : clean;
+  }
+
+  function getStorageArea() {
+    return chrome.storage?.local ?? null;
+  }
+
+  function getCacheStorageArea() {
+    return chrome.storage?.session ?? chrome.storage?.local ?? null;
+  }
+
+  function storageGet(area, keys) {
+    if (!area) return Promise.resolve({});
+    return new Promise((resolve, reject) => {
+      area.get(keys, result => {
+        const error = chrome.runtime?.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+        resolve(result);
+      });
+    });
+  }
+
+  function storageSet(area, values) {
+    if (!area) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      area.set(values, () => {
+        const error = chrome.runtime?.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function isVisibleMessage(el) {
+    if (!el || !el.isConnected) return false;
+    if (sidebar && sidebar.contains(el)) return false;
+
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+      return false;
+    }
+
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
   }
 
   // Finds the scrollable container that holds the conversation.
@@ -68,42 +131,234 @@
       || null;
   }
 
+  function getMessageText(el) {
+    return navCore.normalizeMessageText(el.innerText || el.textContent || '');
+  }
+
+  function getMessageKey(id, text, occurrence) {
+    return navCore.createMessageKey(id, text, occurrence);
+  }
+
+  function findMessageIndexById(id) {
+    if (!id) return -1;
+    return messageData.findIndex(message => message.id === id);
+  }
+
+  function getMessageAnchorTop(el, scrollTop) {
+    return Math.round(scrollTop + el.getBoundingClientRect().top);
+  }
+
+  function findNearbyMessageIndexByText(messages, text, anchorTop, maxDistance) {
+    return navCore.findNearbyMessageIndexByText(messages, text, anchorTop, maxDistance);
+  }
+
+  function getConversationKey() {
+    return navCore.getConversationKeyFromUrl(location.href);
+  }
+
+  function getConversationCacheStorageKey(conversationKey) {
+    return navCore.getConversationCacheStorageKey(CACHE_STORAGE_PREFIX, conversationKey);
+  }
+
+  function cloneMessageData(messages) {
+    return navCore.cloneMessageData(messages);
+  }
+
+  async function loadCachedMessages() {
+    currentConversationKey = getConversationKey();
+    let cached = conversationCache.get(currentConversationKey);
+    if (!cached) {
+      const storage = getCacheStorageArea();
+      const storageKey = getConversationCacheStorageKey(currentConversationKey);
+      try {
+        const result = await storageGet(storage, [storageKey]);
+        cached = result[storageKey];
+        if (cached) {
+          conversationCache.set(currentConversationKey, cloneMessageData(cached));
+        }
+      } catch (error) {
+        console.warn('AI Chat Navigator cache read failed', error);
+      }
+    }
+    messageData = cached ? cloneMessageData(cached) : [];
+    return messageData;
+  }
+
+  async function saveCachedMessages() {
+    const cloned = cloneMessageData(messageData);
+    conversationCache.set(currentConversationKey, cloned);
+    const storage = getCacheStorageArea();
+    const storageKey = getConversationCacheStorageKey(currentConversationKey);
+    try {
+      await storageSet(storage, { [storageKey]: cloned });
+    } catch (error) {
+      console.warn('AI Chat Navigator cache write failed', error);
+    }
+  }
+
+  function renderStatus(message) {
+    const list = sidebar?.querySelector('#cgpt-nav-list');
+    if (!list) return;
+    list.innerHTML = '';
+
+    const status = document.createElement('div');
+    status.className = 'cgpt-nav-empty';
+    status.textContent = message;
+    list.appendChild(status);
+  }
+
+  function handleUrlChange() {
+    if (location.href === lastUrl) return;
+    lastUrl = location.href;
+    handleConversationChange();
+  }
+
+  async function handleConversationChange() {
+    currentConversationKey = getConversationKey();
+    activeScanToken += 1;
+    isScanning = false;
+    messageData = [];
+
+    if (observer) {
+      observer.disconnect();
+      observer = null;
+    }
+
+    const sidebarWasVisible = sidebar?.classList.contains('cgpt-nav-visible');
+
+    if (sidebarWasVisible) {
+      renderStatus('Loading conversation…');
+    }
+
+    await loadCachedMessages();
+
+    if (!observer) {
+      startObserver();
+    }
+
+    if (sidebarWasVisible) {
+      if (messageData.length > 0) {
+        buildSidebar();
+      } else {
+        await showSidebar();
+      }
+    }
+  }
+
   // Collects all user messages by scrolling the conversation from top to bottom.
   // Restores the original scroll position when done.
   async function scanMessages() {
+    const scanToken = ++activeScanToken;
     const container = findScrollContainer();
     const savedTop = container.scrollTop;
-    const seenKeys = new Set();
+    const entries = [];
+    const firstIndexById = new Map();
+    const nextOccurrenceByText = new Map();
+    const maxTop = Math.max(container.scrollHeight - container.clientHeight, 0);
+    const stepSize = Math.max(Math.floor(container.clientHeight * 0.45), 160);
+    const dedupeDistance = Math.max(Math.floor(container.clientHeight * 0.9), 240);
+    const tolerance = 2;
 
-    const collect = () => {
+    const collect = currentTop => {
       for (const el of getHumanMessages()) {
+        const text = getMessageText(el);
+        if (!text) continue;
+
         const id = getMessageId(el);
-        // Use id when available; fall back to text prefix as a dedup key.
-        const key = id ?? el.textContent.trim().slice(0, 80);
-        if (!seenKeys.has(key)) {
-          seenKeys.add(key);
-          messageData.push({ id, text: el.innerText || el.textContent });
+        const anchorTop = getMessageAnchorTop(el, currentTop);
+        if (id && firstIndexById.has(id)) {
+          const existing = entries[firstIndexById.get(id)];
+          if (currentTop < existing.scrollTop) existing.scrollTop = currentTop;
+          if (anchorTop < existing.anchorTop) existing.anchorTop = anchorTop;
+          if (text.length > existing.text.length) existing.text = text;
+          continue;
+        }
+
+        if (!id) {
+          const existingIndex = findNearbyMessageIndexByText(entries, text, anchorTop, dedupeDistance);
+          if (existingIndex >= 0) {
+            const existing = entries[existingIndex];
+            if (currentTop < existing.scrollTop) existing.scrollTop = currentTop;
+            if (anchorTop < existing.anchorTop) existing.anchorTop = anchorTop;
+            if (text.length > existing.text.length) existing.text = text;
+            continue;
+          }
+        }
+
+        const occurrence = nextOccurrenceByText.get(text) ?? 0;
+        nextOccurrenceByText.set(text, occurrence + 1);
+
+        const key = getMessageKey(id, text, occurrence);
+        const entry = { key, id, text, scrollTop: currentTop, anchorTop };
+        entries.push(entry);
+
+        if (id) {
+          firstIndexById.set(id, entries.length - 1);
         }
       }
     };
 
-    container.scrollTop = 0;
-    await new Promise(r => setTimeout(r, 150));
+    const waitForViewportToSettle = async previousSignature => {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        await delay(120);
+        const messages = getHumanMessages();
+        const signature = messages
+          .map(el => getMessageId(el) ?? getMessageText(el).slice(0, 80))
+          .join('|');
+        if (!signature || signature !== previousSignature) return signature;
+      }
+      return previousSignature;
+    };
 
-    let lastTop = -1;
-    while (container.scrollTop !== lastTop) {
-      collect();
-      lastTop = container.scrollTop;
-      container.scrollTop += Math.max(container.clientHeight, 400);
-      await new Promise(r => setTimeout(r, 100));
+    isScanning = true;
+    try {
+      container.scrollTop = 0;
+      let signature = await waitForViewportToSettle('');
+      collect(container.scrollTop);
+
+      let currentTop = container.scrollTop;
+      let stallCount = 0;
+      let iterations = 0;
+      while (currentTop < maxTop - tolerance) {
+        if (scanToken !== activeScanToken) {
+          throw new Error('Scan cancelled');
+        }
+
+        const nextTop = Math.min(currentTop + stepSize, maxTop);
+        if (nextTop <= currentTop + tolerance) break;
+        container.scrollTop = nextTop;
+        signature = await waitForViewportToSettle(signature);
+        collect(container.scrollTop);
+
+        const updatedTop = container.scrollTop;
+        if (updatedTop <= currentTop + tolerance) {
+          stallCount += 1;
+          if (stallCount >= 3) break;
+        } else {
+          stallCount = 0;
+        }
+
+        currentTop = updatedTop;
+        iterations += 1;
+        if (iterations >= 500) break;
+      }
+
+      container.scrollTop = maxTop;
+      await waitForViewportToSettle(signature);
+      collect(container.scrollTop);
+
+      messageData = entries;
+      await saveCachedMessages();
+    } finally {
+      container.scrollTop = savedTop;
+      isScanning = false;
     }
-    collect(); // final pass at the bottom
-
-    container.scrollTop = savedTop;
   }
 
   async function scrollToMessage(id, index) {
     const { highlightColor } = getSiteConfig();
+    const targetMessage = messageData[index];
+    if (!targetMessage) return;
 
     const highlight = el => {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -112,25 +367,44 @@
       setTimeout(() => { el.style.background = ''; }, 1200);
     };
 
-    if (id) {
+    if (targetMessage.id) {
       // Element may already be in the DOM (not virtualized out).
-      let el = document.querySelector(`[data-message-id="${CSS.escape(id)}"]`);
-      if (el) { highlight(el); return; }
-
-      // Scroll to the approximate position to trigger the virtual renderer.
-      const container = findScrollContainer();
-      const fraction = messageData.length > 1 ? index / (messageData.length - 1) : 0;
-      container.scrollTop = fraction * container.scrollHeight;
-      await new Promise(r => setTimeout(r, 300));
-
-      el = document.querySelector(`[data-message-id="${CSS.escape(id)}"]`);
+      let el = document.querySelector(`[data-message-id="${CSS.escape(targetMessage.id)}"]`);
       if (el) { highlight(el); return; }
     }
 
-    // Final fallback: just scroll to the proportional position.
     const container = findScrollContainer();
-    const fraction = messageData.length > 1 ? index / (messageData.length - 1) : 0;
-    container.scrollTop = fraction * container.scrollHeight;
+    const estimatedTop = Math.max(targetMessage.scrollTop - Math.floor(container.clientHeight * 0.25), 0);
+    const maxTop = Math.max(container.scrollHeight - container.clientHeight, 0);
+    container.scrollTop = Math.min(estimatedTop, maxTop);
+    await delay(250);
+
+    if (targetMessage.id) {
+      let el = document.querySelector(`[data-message-id="${CSS.escape(targetMessage.id)}"]`);
+      if (el) { highlight(el); return; }
+
+      const targetIndex = findMessageIndexById(targetMessage.id);
+      const start = Math.max(targetIndex - 2, 0);
+      const end = Math.min(targetIndex + 2, messageData.length - 1);
+      for (let i = start; i <= end; i += 1) {
+        const candidateTop = Math.max(
+          messageData[i].scrollTop - Math.floor(container.clientHeight * 0.25),
+          0
+        );
+        container.scrollTop = Math.min(candidateTop, maxTop);
+        await delay(220);
+        el = document.querySelector(`[data-message-id="${CSS.escape(targetMessage.id)}"]`);
+        if (el) { highlight(el); return; }
+      }
+    }
+
+    const visibleMatch = getHumanMessages().find(el => getMessageText(el) === targetMessage.text);
+    if (visibleMatch) {
+      highlight(visibleMatch);
+      return;
+    }
+
+    container.scrollTop = Math.min(targetMessage.scrollTop, maxTop);
   }
 
   function buildSidebar() {
@@ -217,21 +491,58 @@
   }
 
   async function showSidebar() {
+    if (isScanning) return;
+    if (!navCore.shouldProcessConversationUpdate(currentConversationKey, getConversationKey())) {
+      await loadCachedMessages();
+    }
+
     sidebar.classList.add('cgpt-nav-visible');
     toggle.classList.add('cgpt-nav-active');
 
-    // Show a loading placeholder while we scan.
-    const list = sidebar.querySelector('#cgpt-nav-list');
-    list.innerHTML = '<div class="cgpt-nav-empty">Scanning messages…</div>';
+    if (messageData.length > 0) {
+      buildSidebar();
+      return;
+    }
 
-    messageData = [];
-    await scanMessages();
-    buildSidebar();
+    renderStatus('Scanning messages…');
+
+    try {
+      await scanMessages();
+      if (!sidebar.classList.contains('cgpt-nav-visible')) return;
+      if (!navCore.shouldProcessConversationUpdate(currentConversationKey, getConversationKey())) return;
+      buildSidebar();
+    } catch (error) {
+      if (error?.message === 'Scan cancelled') return;
+      console.error('AI Chat Navigator scan failed', error);
+      renderStatus('Could not scan messages. Close and reopen the panel to retry.');
+    }
   }
 
   function hideSidebar() {
     sidebar.classList.remove('cgpt-nav-visible');
     toggle.classList.remove('cgpt-nav-active');
+  }
+
+  async function loadAutoShowPreference() {
+    const storage = getStorageArea();
+    if (!storage) return false;
+
+    const result = await storage.get({ [AUTO_SHOW_KEY]: false });
+    autoShowEnabled = Boolean(result[AUTO_SHOW_KEY]);
+    return autoShowEnabled;
+  }
+
+  function watchPreferenceChanges() {
+    if (!chrome.storage?.onChanged) return;
+
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local' || !changes[AUTO_SHOW_KEY]) return;
+      autoShowEnabled = Boolean(changes[AUTO_SHOW_KEY].newValue);
+
+      if (autoShowEnabled && sidebar && !sidebar.classList.contains('cgpt-nav-visible')) {
+        showSidebar();
+      }
+    });
   }
 
   let rebuildTimer = null;
@@ -240,19 +551,89 @@
     observer = new MutationObserver(() => {
       clearTimeout(rebuildTimer);
       rebuildTimer = setTimeout(() => {
-        if (!sidebar.classList.contains('cgpt-nav-visible')) return;
+        if (!sidebar.classList.contains('cgpt-nav-visible') || isScanning) return;
+        if (!navCore.shouldProcessConversationUpdate(currentConversationKey, getConversationKey())) return;
+
         // Merge any newly visible messages into messageData without rescanning.
-        const seenKeys = new Set(
-          messageData.map(m => m.id ?? m.text.trim().slice(0, 80))
-        );
-        for (const el of getHumanMessages()) {
-          const id = getMessageId(el);
-          const key = id ?? el.textContent.trim().slice(0, 80);
-          if (!seenKeys.has(key)) {
-            seenKeys.add(key);
-            messageData.push({ id, text: el.innerText || el.textContent });
+        const visibleMessages = getHumanMessages();
+        if (visibleMessages.length === 0) return;
+
+        const seenKeys = new Set(messageData.map(message => message.key));
+        const occurrenceByText = new Map();
+        for (const message of messageData) {
+          if (!message.id) {
+            const count = occurrenceByText.get(message.text) ?? 0;
+            occurrenceByText.set(message.text, count + 1);
           }
         }
+
+        let changed = false;
+        const container = findScrollContainer();
+        const dedupeDistance = Math.max(Math.floor(container.clientHeight * 0.9), 240);
+        for (const el of getHumanMessages()) {
+          const id = getMessageId(el);
+          const text = getMessageText(el);
+          if (!text) continue;
+          const anchorTop = getMessageAnchorTop(el, container.scrollTop);
+
+          if (id) {
+            const existingIndex = findMessageIndexById(id);
+            if (existingIndex >= 0) {
+              const existing = messageData[existingIndex];
+              if (container.scrollTop < existing.scrollTop) {
+                existing.scrollTop = container.scrollTop;
+                changed = true;
+              }
+              if (anchorTop < (existing.anchorTop ?? existing.scrollTop)) {
+                existing.anchorTop = anchorTop;
+                changed = true;
+              }
+              if (text.length > existing.text.length) {
+                existing.text = text;
+                changed = true;
+              }
+              continue;
+            }
+          }
+
+          if (!id) {
+            const existingIndex = findNearbyMessageIndexByText(
+              messageData,
+              text,
+              anchorTop,
+              dedupeDistance
+            );
+            if (existingIndex >= 0) {
+              const existing = messageData[existingIndex];
+              if (container.scrollTop < existing.scrollTop) {
+                existing.scrollTop = container.scrollTop;
+                changed = true;
+              }
+              if (anchorTop < (existing.anchorTop ?? existing.scrollTop)) {
+                existing.anchorTop = anchorTop;
+                changed = true;
+              }
+              if (text.length > existing.text.length) {
+                existing.text = text;
+                changed = true;
+              }
+              continue;
+            }
+          }
+
+          const occurrence = occurrenceByText.get(text) ?? 0;
+          const key = getMessageKey(id, text, occurrence);
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            occurrenceByText.set(text, occurrence + 1);
+            messageData.push({ key, id, text, scrollTop: container.scrollTop, anchorTop });
+            changed = true;
+          }
+        }
+
+        if (!changed) return;
+
+        void saveCachedMessages();
         observer.disconnect();
         buildSidebar();
         observer.observe(document.body, { childList: true, subtree: true });
@@ -261,11 +642,16 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  function init() {
+  async function init() {
     if (document.getElementById(SIDEBAR_ID)) return;
     createSidebar();
     createToggle();
     startObserver();
+    await loadCachedMessages();
+    await loadAutoShowPreference();
+    if (autoShowEnabled) {
+      showSidebar();
+    }
   }
 
   if (document.readyState === 'loading') {
@@ -274,20 +660,28 @@
     init();
   }
 
+  watchPreferenceChanges();
+
   // Re-init on SPA navigation.
   let lastUrl = location.href;
-  new MutationObserver(() => {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      setTimeout(() => {
-        const existing = document.getElementById(SIDEBAR_ID);
-        if (existing) existing.remove();
-        const existingToggle = document.getElementById(TOGGLE_ID);
-        if (existingToggle) existingToggle.remove();
-        if (observer) observer.disconnect();
-        messageData = [];
-        init();
-      }, 800);
-    }
-  }).observe(document.body, { childList: true });
+
+  const originalPushState = history.pushState.bind(history);
+  history.pushState = function (...args) {
+    const result = originalPushState(...args);
+    handleUrlChange();
+    return result;
+  };
+
+  const originalReplaceState = history.replaceState.bind(history);
+  history.replaceState = function (...args) {
+    const result = originalReplaceState(...args);
+    handleUrlChange();
+    return result;
+  };
+
+  window.addEventListener('popstate', handleUrlChange);
+  window.addEventListener('hashchange', handleUrlChange);
+
+  new MutationObserver(handleUrlChange).observe(document.body, { childList: true, subtree: true });
+  window.setInterval(handleUrlChange, 500);
 })();

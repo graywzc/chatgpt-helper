@@ -3,11 +3,11 @@
   "name": "AI Chat Conversation Navigator",
   "version": "1.2.0",
   "description": "Adds a sidebar to ChatGPT, Claude and Gemini showing all your messages for quick navigation",
-  "permissions": [],
+  "permissions": ["storage"],
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://claude.ai/*", "https://gemini.google.com/*"],
-      "js": ["content.js"],
+      "js": ["navigator-core.js", "content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
     }
