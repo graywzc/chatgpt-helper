@@ -29,6 +29,13 @@ test('creates storage keys for cached conversation indexes', () => {
   );
 });
 
+test('maps supported hosts to providers', () => {
+  assert.equal(core.getProviderForHost('chatgpt.com'), 'chatgpt');
+  assert.equal(core.getProviderForHost('chat.openai.com'), 'chatgpt');
+  assert.equal(core.getProviderForHost('claude.ai'), 'claude');
+  assert.equal(core.getProviderForHost('gemini.google.com'), 'gemini');
+});
+
 test('dedupes nearby no-id messages with the same text', () => {
   const messages = [
     { text: 'what is Chrome auto browse', scrollTop: 100, anchorTop: 140 },
@@ -66,6 +73,71 @@ test('blocks conversation updates when the active topic changed', () => {
     ),
     true
   );
+});
+
+test('uses DOM indexing for claude and gemini, scan indexing elsewhere', () => {
+  assert.equal(core.getIndexingModeForHost('claude.ai'), 'dom');
+  assert.equal(core.getIndexingModeForHost('gemini.google.com'), 'dom');
+  assert.equal(core.getIndexingModeForHost('chatgpt.com'), 'scan');
+});
+
+test('creates provider-agnostic cache entries with metadata', () => {
+  const entry = core.createConversationCacheEntry({
+    conversationKey: 'https://claude.ai/chat/abc',
+    provider: 'claude',
+    messages: [{ key: 'id:1', text: 'hello', scrollTop: 10, anchorTop: 12 }],
+    status: 'ready',
+    indexedAt: 100,
+    lastVisitedAt: 200,
+    indexVersion: 3,
+  });
+
+  assert.deepEqual(entry, {
+    conversationKey: 'https://claude.ai/chat/abc',
+    provider: 'claude',
+    status: 'ready',
+    indexedAt: 100,
+    lastVisitedAt: 200,
+    indexVersion: 3,
+    messageCount: 1,
+    messages: [{ key: 'id:1', text: 'hello', scrollTop: 10, anchorTop: 12 }],
+  });
+});
+
+test('normalizes legacy array cache entries into the shared cache shape', () => {
+  const normalized = core.normalizeConversationCacheEntry(
+    [{ key: 'id:1', text: 'hello', scrollTop: 10, anchorTop: 12 }],
+    {
+      conversationKey: 'https://gemini.google.com/app/abc',
+      provider: 'gemini',
+    }
+  );
+
+  assert.equal(normalized.conversationKey, 'https://gemini.google.com/app/abc');
+  assert.equal(normalized.provider, 'gemini');
+  assert.equal(normalized.status, 'ready');
+  assert.equal(normalized.messageCount, 1);
+  assert.deepEqual(normalized.messages, [{ key: 'id:1', text: 'hello', scrollTop: 10, anchorTop: 12 }]);
+});
+
+test('normalizes object cache entries and fills missing defaults', () => {
+  const normalized = core.normalizeConversationCacheEntry(
+    {
+      status: 'partial',
+      messages: [{ key: 'id:2', text: 'hi', scrollTop: 20, anchorTop: 25 }],
+    },
+    {
+      conversationKey: 'https://chatgpt.com/c/abc',
+      provider: 'chatgpt',
+    }
+  );
+
+  assert.equal(normalized.conversationKey, 'https://chatgpt.com/c/abc');
+  assert.equal(normalized.provider, 'chatgpt');
+  assert.equal(normalized.status, 'partial');
+  assert.equal(normalized.indexVersion, 1);
+  assert.equal(normalized.messageCount, 1);
+  assert.deepEqual(normalized.messages, [{ key: 'id:2', text: 'hi', scrollTop: 20, anchorTop: 25 }]);
 });
 
 test('clones message data without reusing object references', () => {

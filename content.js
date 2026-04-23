@@ -9,6 +9,8 @@
   let toggle = null;
   let observer = null;
   let autoShowEnabled = false;
+  let sidebarShouldBeVisible = false;
+  let hasCompletedFullIndexForConversation = false;
   const conversationCache = new Map();
   const CACHE_STORAGE_PREFIX = 'cgptNavCache:';
   let currentConversationKey = navCore.getConversationKeyFromUrl(location.href);
@@ -22,21 +24,28 @@
     const host = location.hostname;
     if (host === 'claude.ai') {
       return {
+        indexingMode: navCore.getIndexingModeForHost(host),
         selectors: ['[data-testid="user-message"]'],
         highlightColor: 'rgba(218, 119, 86, 0.15)',
       };
     }
     if (host === 'gemini.google.com') {
       return {
+        indexingMode: navCore.getIndexingModeForHost(host),
         rootSelector: 'main',
         selectors: ['.query-text', 'user-query .query-content'],
         highlightColor: 'rgba(66, 133, 244, 0.15)',
       };
     }
     return {
+      indexingMode: navCore.getIndexingModeForHost(host),
       selectors: ['[data-message-author-role="user"]'],
       highlightColor: 'rgba(99, 102, 241, 0.15)',
     };
+  }
+
+  function shouldUseDomIndexing() {
+    return getSiteConfig().indexingMode === 'dom';
   }
 
   function getHumanMessages() {
@@ -92,6 +101,12 @@
 
   function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function getViewportSignature(messages) {
+    return messages
+      .map(el => getMessageId(el) ?? getMessageText(el).slice(0, 80))
+      .join('|');
   }
 
   function isVisibleMessage(el) {
@@ -156,6 +171,10 @@
     return navCore.getConversationKeyFromUrl(location.href);
   }
 
+  function getProvider() {
+    return navCore.getProviderForHost(location.hostname);
+  }
+
   function getConversationCacheStorageKey(conversationKey) {
     return navCore.getConversationCacheStorageKey(CACHE_STORAGE_PREFIX, conversationKey);
   }
@@ -164,33 +183,118 @@
     return navCore.cloneMessageData(messages);
   }
 
+  function collectDomMessages() {
+    const entries = [];
+    const firstIndexById = new Map();
+    const nextOccurrenceByText = new Map();
+    const dedupeDistance = 48;
+
+    for (const el of getHumanMessages()) {
+      const text = getMessageText(el);
+      if (!text) continue;
+
+      const id = getMessageId(el);
+      const anchorTop = Math.round(window.scrollY + el.getBoundingClientRect().top);
+      const scrollTop = anchorTop;
+
+      if (id && firstIndexById.has(id)) {
+        const existing = entries[firstIndexById.get(id)];
+        if (text.length > existing.text.length) existing.text = text;
+        if (anchorTop < existing.anchorTop) {
+          existing.anchorTop = anchorTop;
+          existing.scrollTop = scrollTop;
+        }
+        continue;
+      }
+
+      if (!id) {
+        const existingIndex = findNearbyMessageIndexByText(entries, text, anchorTop, dedupeDistance);
+        if (existingIndex >= 0) {
+          const existing = entries[existingIndex];
+          if (text.length > existing.text.length) existing.text = text;
+          if (anchorTop < existing.anchorTop) {
+            existing.anchorTop = anchorTop;
+            existing.scrollTop = scrollTop;
+          }
+          continue;
+        }
+      }
+
+      const occurrence = nextOccurrenceByText.get(text) ?? 0;
+      nextOccurrenceByText.set(text, occurrence + 1);
+
+      const key = getMessageKey(id, text, occurrence);
+      const entry = { key, id, text, scrollTop, anchorTop };
+      entries.push(entry);
+
+      if (id) {
+        firstIndexById.set(id, entries.length - 1);
+      }
+    }
+
+    return entries.sort((a, b) => (a.anchorTop ?? a.scrollTop) - (b.anchorTop ?? b.scrollTop));
+  }
+
   async function loadCachedMessages() {
     currentConversationKey = getConversationKey();
+    const provider = getProvider();
+    const storage = getCacheStorageArea();
+    const storageKey = getConversationCacheStorageKey(currentConversationKey);
     let cached = conversationCache.get(currentConversationKey);
     if (!cached) {
-      const storage = getCacheStorageArea();
-      const storageKey = getConversationCacheStorageKey(currentConversationKey);
       try {
         const result = await storageGet(storage, [storageKey]);
         cached = result[storageKey];
-        if (cached) {
-          conversationCache.set(currentConversationKey, cloneMessageData(cached));
+        if (cached !== undefined) {
+          const normalizedEntry = navCore.normalizeConversationCacheEntry(cached, {
+            conversationKey: currentConversationKey,
+            provider,
+          });
+          conversationCache.set(currentConversationKey, normalizedEntry);
+          cached = normalizedEntry;
         }
       } catch (error) {
         console.warn('AI Chat Navigator cache read failed', error);
       }
     }
-    messageData = cached ? cloneMessageData(cached) : [];
+    const normalizedCached = cached
+      ? navCore.normalizeConversationCacheEntry(cached, {
+        conversationKey: currentConversationKey,
+        provider,
+      })
+      : null;
+
+    if (normalizedCached) {
+      normalizedCached.lastVisitedAt = Date.now();
+      conversationCache.set(currentConversationKey, normalizedCached);
+    }
+
+    messageData = normalizedCached ? cloneMessageData(normalizedCached.messages) : [];
+    hasCompletedFullIndexForConversation = normalizedCached?.status === 'ready';
+
+    if (normalizedCached) {
+      try {
+        await storageSet(storage, { [storageKey]: normalizedCached });
+      } catch (error) {
+        console.warn('AI Chat Navigator cache touch failed', error);
+      }
+    }
+
     return messageData;
   }
 
   async function saveCachedMessages() {
-    const cloned = cloneMessageData(messageData);
-    conversationCache.set(currentConversationKey, cloned);
+    const entry = navCore.createConversationCacheEntry({
+      conversationKey: currentConversationKey,
+      provider: getProvider(),
+      messages: messageData,
+      status: hasCompletedFullIndexForConversation ? 'ready' : 'partial',
+    });
+    conversationCache.set(currentConversationKey, entry);
     const storage = getCacheStorageArea();
     const storageKey = getConversationCacheStorageKey(currentConversationKey);
     try {
-      await storageSet(storage, { [storageKey]: cloned });
+      await storageSet(storage, { [storageKey]: entry });
     } catch (error) {
       console.warn('AI Chat Navigator cache write failed', error);
     }
@@ -232,6 +336,26 @@
     await showSidebar();
   }
 
+  function ensureUiMounted() {
+    const sidebarWasMissing = !sidebar || !sidebar.isConnected;
+    const toggleWasMissing = !toggle || !toggle.isConnected;
+
+    if (!sidebar || !sidebar.isConnected) {
+      createSidebar();
+    }
+    if (!toggle || !toggle.isConnected) {
+      createToggle();
+    }
+
+    if (sidebarShouldBeVisible) {
+      sidebar.classList.add('cgpt-nav-visible');
+      toggle.classList.add('cgpt-nav-active');
+      if ((sidebarWasMissing || toggleWasMissing) && messageData.length > 0) {
+        buildSidebar();
+      }
+    }
+  }
+
   function handleUrlChange() {
     if (location.href === lastUrl) return;
     lastUrl = location.href;
@@ -239,9 +363,11 @@
   }
 
   async function handleConversationChange() {
+    ensureUiMounted();
     currentConversationKey = getConversationKey();
     activeScanToken += 1;
     isScanning = false;
+    hasCompletedFullIndexForConversation = false;
     messageData = [];
 
     if (observer) {
@@ -279,7 +405,6 @@
     const entries = [];
     const firstIndexById = new Map();
     const nextOccurrenceByText = new Map();
-    const maxTop = Math.max(container.scrollHeight - container.clientHeight, 0);
     const stepSize = Math.max(Math.floor(container.clientHeight * 0.45), 160);
     const dedupeDistance = Math.max(Math.floor(container.clientHeight * 0.9), 240);
     const tolerance = 2;
@@ -327,9 +452,7 @@
       for (let attempt = 0; attempt < 8; attempt += 1) {
         await delay(120);
         const messages = getHumanMessages();
-        const signature = messages
-          .map(el => getMessageId(el) ?? getMessageText(el).slice(0, 80))
-          .join('|');
+        const signature = getViewportSignature(messages);
         if (!signature || signature !== previousSignature) return signature;
       }
       return previousSignature;
@@ -344,19 +467,21 @@
       let currentTop = container.scrollTop;
       let stallCount = 0;
       let iterations = 0;
-      while (currentTop < maxTop - tolerance) {
+      while (currentTop < Math.max(container.scrollHeight - container.clientHeight, 0) - tolerance) {
         if (scanToken !== activeScanToken) {
           throw new Error('Scan cancelled');
         }
 
-        const nextTop = Math.min(currentTop + stepSize, maxTop);
+        const liveMaxTop = Math.max(container.scrollHeight - container.clientHeight, 0);
+        const nextTop = Math.min(currentTop + stepSize, liveMaxTop);
         if (nextTop <= currentTop + tolerance) break;
         container.scrollTop = nextTop;
+        const previousSignature = signature;
         signature = await waitForViewportToSettle(signature);
         collect(container.scrollTop);
 
         const updatedTop = container.scrollTop;
-        if (updatedTop <= currentTop + tolerance) {
+        if (updatedTop <= currentTop + tolerance && signature === previousSignature) {
           stallCount += 1;
           if (stallCount >= 3) break;
         } else {
@@ -368,16 +493,28 @@
         if (iterations >= 500) break;
       }
 
-      container.scrollTop = maxTop;
+      container.scrollTop = Math.max(container.scrollHeight - container.clientHeight, 0);
       await waitForViewportToSettle(signature);
       collect(container.scrollTop);
 
       messageData = entries;
+      hasCompletedFullIndexForConversation = true;
       await saveCachedMessages();
     } finally {
       container.scrollTop = savedTop;
       isScanning = false;
     }
+  }
+
+  async function indexMessages() {
+    if (shouldUseDomIndexing()) {
+      messageData = collectDomMessages();
+      hasCompletedFullIndexForConversation = true;
+      await saveCachedMessages();
+      return;
+    }
+
+    await scanMessages();
   }
 
   async function scrollToMessage(id, index) {
@@ -516,6 +653,8 @@
   }
 
   async function showSidebar() {
+    ensureUiMounted();
+    sidebarShouldBeVisible = true;
     if (isScanning) return;
     if (!navCore.shouldProcessConversationUpdate(currentConversationKey, getConversationKey())) {
       await loadCachedMessages();
@@ -526,13 +665,17 @@
 
     if (messageData.length > 0) {
       buildSidebar();
-      return;
+      if (shouldUseDomIndexing() || hasCompletedFullIndexForConversation) {
+        return;
+      }
     }
 
-    renderStatus('Scanning messages…');
+    if (messageData.length === 0) {
+      renderStatus(shouldUseDomIndexing() ? 'Loading messages…' : 'Scanning messages…');
+    }
 
     try {
-      await scanMessages();
+      await indexMessages();
       if (!sidebar.classList.contains('cgpt-nav-visible')) return;
       if (!navCore.shouldProcessConversationUpdate(currentConversationKey, getConversationKey())) return;
       buildSidebar();
@@ -549,6 +692,7 @@
   }
 
   function hideSidebar() {
+    sidebarShouldBeVisible = false;
     sidebar.classList.remove('cgpt-nav-visible');
     toggle.classList.remove('cgpt-nav-active');
   }
@@ -557,7 +701,7 @@
     const storage = getStorageArea();
     if (!storage) return false;
 
-    const result = await storage.get({ [AUTO_SHOW_KEY]: false });
+    const result = await storageGet(storage, { [AUTO_SHOW_KEY]: false });
     autoShowEnabled = Boolean(result[AUTO_SHOW_KEY]);
     return autoShowEnabled;
   }
@@ -583,6 +727,18 @@
       rebuildTimer = setTimeout(() => {
         if (!sidebar.classList.contains('cgpt-nav-visible') || isScanning) return;
         if (!navCore.shouldProcessConversationUpdate(currentConversationKey, getConversationKey())) return;
+
+        if (shouldUseDomIndexing()) {
+          const rebuiltMessages = collectDomMessages();
+          if (JSON.stringify(rebuiltMessages) === JSON.stringify(messageData)) return;
+
+          messageData = rebuiltMessages;
+          void saveCachedMessages();
+          observer.disconnect();
+          buildSidebar();
+          observer.observe(document.body, { childList: true, subtree: true });
+          return;
+        }
 
         // Merge any newly visible messages into messageData without rescanning.
         const visibleMessages = getHumanMessages();
@@ -673,9 +829,7 @@
   }
 
   async function init() {
-    if (document.getElementById(SIDEBAR_ID)) return;
-    createSidebar();
-    createToggle();
+    ensureUiMounted();
     startObserver();
     await loadCachedMessages();
     await loadAutoShowPreference();
@@ -685,9 +839,15 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', () => {
+      void init().catch(error => {
+        console.error('AI Chat Navigator init failed', error);
+      });
+    });
   } else {
-    init();
+    void init().catch(error => {
+      console.error('AI Chat Navigator init failed', error);
+    });
   }
 
   watchPreferenceChanges();
@@ -719,6 +879,12 @@
     void refreshVisibleSidebarIfNeeded();
   });
 
-  new MutationObserver(handleUrlChange).observe(document.body, { childList: true, subtree: true });
-  window.setInterval(handleUrlChange, 500);
+  new MutationObserver(() => {
+    ensureUiMounted();
+    handleUrlChange();
+  }).observe(document.documentElement, { childList: true, subtree: true });
+  window.setInterval(() => {
+    ensureUiMounted();
+    handleUrlChange();
+  }, 500);
 })();
