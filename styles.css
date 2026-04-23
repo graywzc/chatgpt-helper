@@ -24,9 +24,15 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   padding: 16px 14px 14px;
   border-bottom: 1px solid #313244;
   flex-shrink: 0;
+}
+
+.cgpt-nav-title-wrap {
+  min-width: 0;
+  flex: 1;
 }
 
 .cgpt-nav-header span {
@@ -35,6 +41,52 @@
   color: #cdd6f4;
   letter-spacing: 0.03em;
   text-transform: uppercase;
+}
+
+#cgpt-nav-debug-panel {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid #313244;
+  border-radius: 8px;
+  background: #181825;
+  min-height: 120px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.cgpt-nav-debug-log-row {
+  font-family: "SFMono-Regular", "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  color: #bac2de;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cgpt-nav-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cgpt-nav-header-btn {
+  background: #313244;
+  border: 1px solid #45475a;
+  color: #bac2de;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 6px 8px;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.cgpt-nav-header-btn:hover {
+  color: #cdd6f4;
+  background: #3d4057;
+  border-color: #5c6075;
 }
 
 .cgpt-nav-close {
@@ -79,8 +131,8 @@
 
 /* Each message item */
 .cgpt-nav-item {
-  display: flex;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
   gap: 10px;
   padding: 9px 10px;
   background: none;
@@ -117,7 +169,19 @@
   color: #bac2de;
   line-height: 1.45;
   word-break: break-word;
-  flex: 1;
+  min-width: 0;
+}
+
+.cgpt-nav-debug-row {
+  grid-column: 2;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #7f849c;
+}
+
+.cgpt-nav-debug-estimate {
+  font-family: "SFMono-Regular", "Cascadia Code", "JetBrains Mono", monospace;
+  color: #89b4fa;
 }
 
 .cgpt-nav-empty {
@@ -125,6 +189,13 @@
   font-size: 13px;
   text-align: center;
   padding: 32px 16px;
+}
+
+.cgpt-nav-status {
+  color: #7f849c;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 8px 10px 14px;
 }
 
 /* Toggle button */
