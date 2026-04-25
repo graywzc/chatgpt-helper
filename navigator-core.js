@@ -90,6 +90,10 @@
 
   function getConversationKeyFromUrl(url) {
     const parsed = new URL(url);
+    const chatGptConversationId = getChatGptConversationIdFromUrl(url);
+    if (chatGptConversationId && getProviderForHost(parsed.hostname) === 'chatgpt') {
+      return `${parsed.origin}/c/${chatGptConversationId}`;
+    }
     return `${parsed.origin}${parsed.pathname}`;
   }
 
@@ -111,13 +115,27 @@
     return 'scan';
   }
 
+  function isChatGptProjectConversationUrl(url) {
+    const parsed = new URL(url);
+    if (getProviderForHost(parsed.hostname) !== 'chatgpt') return false;
+    return /^\/g\/[^/]+\/c\/[^/]+$/.test(parsed.pathname);
+  }
+
+  function getIndexingModeForUrl(url) {
+    if (isChatGptProjectConversationUrl(url)) {
+      return 'data';
+    }
+    const parsed = new URL(url);
+    return getIndexingModeForHost(parsed.hostname);
+  }
+
   function shouldReuseIndexedMessages(indexingMode, hasCompletedFullIndex) {
     return indexingMode === 'dom' || Boolean(hasCompletedFullIndex);
   }
 
   function getChatGptConversationIdFromUrl(url) {
     const parsed = new URL(url);
-    const match = parsed.pathname.match(/^\/c\/([^/]+)$/);
+    const match = parsed.pathname.match(/^\/(?:g\/[^/]+\/)?c\/([^/]+)$/);
     return match ? match[1] : null;
   }
 
@@ -239,8 +257,10 @@
     getChatGptConversationIdFromUrl,
     getConversationCacheStorageKey,
     getConversationKeyFromUrl,
+    getIndexingModeForUrl,
     getIndexingModeForHost,
     getProviderForHost,
+    isChatGptProjectConversationUrl,
     normalizeMessageText,
     normalizeConversationCacheEntry,
     shouldReuseIndexedMessages,

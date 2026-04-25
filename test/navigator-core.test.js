@@ -17,6 +17,10 @@ test('creates stable conversation cache keys from urls', () => {
     'https://chatgpt.com/c/69e66adc-1e2c-83e8-8799-3d1fc784ddc9'
   );
   assert.equal(
+    core.getConversationKeyFromUrl('https://chatgpt.com/g/g-p-686cc34673848191a0a2d0d434eed51a-learning-japanese/c/69b6eed3-d83c-832f-a856-8aa7c3551a72'),
+    'https://chatgpt.com/c/69b6eed3-d83c-832f-a856-8aa7c3551a72'
+  );
+  assert.equal(
     core.getConversationKeyFromUrl('https://gemini.google.com/app/1a1b97320be15e3a'),
     'https://gemini.google.com/app/1a1b97320be15e3a'
   );
@@ -81,6 +85,21 @@ test('uses DOM indexing for claude and gemini, scan indexing elsewhere', () => {
   assert.equal(core.getIndexingModeForHost('chatgpt.com'), 'data');
 });
 
+test('uses ChatGPT data indexing for project chats', () => {
+  assert.equal(
+    core.isChatGptProjectConversationUrl('https://chatgpt.com/g/g-p-686cc34673848191a0a2d0d434eed51a-learning-japanese/c/69b6eed3-d83c-832f-a856-8aa7c3551a72'),
+    true
+  );
+  assert.equal(
+    core.getIndexingModeForUrl('https://chatgpt.com/g/g-p-686cc34673848191a0a2d0d434eed51a-learning-japanese/c/69b6eed3-d83c-832f-a856-8aa7c3551a72'),
+    'data'
+  );
+  assert.equal(
+    core.getIndexingModeForUrl('https://chatgpt.com/c/69e66adc-1e2c-83e8-8799-3d1fc784ddc9'),
+    'data'
+  );
+});
+
 test('only reuses cached scan results after a full index completed', () => {
   assert.equal(core.shouldReuseIndexedMessages('dom', false), true);
   assert.equal(core.shouldReuseIndexedMessages('scan', true), true);
@@ -91,6 +110,10 @@ test('extracts the ChatGPT conversation id from chat URLs', () => {
   assert.equal(
     core.getChatGptConversationIdFromUrl('https://chatgpt.com/c/69e66adc-1e2c-83e8-8799-3d1fc784ddc9'),
     '69e66adc-1e2c-83e8-8799-3d1fc784ddc9'
+  );
+  assert.equal(
+    core.getChatGptConversationIdFromUrl('https://chatgpt.com/g/g-p-686cc34673848191a0a2d0d434eed51a-learning-japanese/c/69b6eed3-d83c-832f-a856-8aa7c3551a72'),
+    '69b6eed3-d83c-832f-a856-8aa7c3551a72'
   );
   assert.equal(core.getChatGptConversationIdFromUrl('https://chatgpt.com/'), null);
 });

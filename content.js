@@ -46,7 +46,7 @@
       };
     }
     return {
-      indexingMode: navCore.getIndexingModeForHost(host),
+      indexingMode: navCore.getIndexingModeForUrl(location.href),
       selectors: ['[data-message-author-role="user"]'],
       highlightColor: 'rgba(99, 102, 241, 0.15)',
     };
