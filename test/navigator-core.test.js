@@ -302,6 +302,8 @@ test('content script requests ChatGPT conversation data through the extension wo
   assert.match(contentSource, /Clear cached absolute positions for this chat/);
   assert.match(contentSource, /pos \$\{formatAnchorValue\(currentPos\)\}/);
   assert.match(contentSource, /mergeKnownAnchorsIntoEntries/);
+  assert.match(contentSource, /cgpt-nav-active/);
+  assert.match(contentSource, /addEventListener\('scroll', requestScrollHighlightUpdate/);
   assert.match(contentSource, /cgpt-nav-debug-panel/);
   assert.match(contentSource, /going to the estimated pos by container\.scrollTop/);
   assert.match(contentSource, /go to it by container\.scrollTop = pos/);
