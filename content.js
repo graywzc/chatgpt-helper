@@ -26,6 +26,10 @@
   let lastDataIndexStartedAt = 0;
   let lastObservedDataMutationSignature = '';
   let lastConsumedObservedRequestAt = null;
+  let activeNavIndex = -1;
+  let scrollHighlightContainer = null;
+  let scrollHighlightTarget = null;
+  let scrollHighlightFrame = null;
   const DATA_INDEX_MIN_INTERVAL_MS = 1500;
 
   function getSiteConfig() {
@@ -224,13 +228,20 @@
   }
 
   function findVisibleElementForMessageIndex(targetIndex) {
+    const matchedEntries = getVisibleMessageEntriesWithIndices();
+    const match = matchedEntries.find(entry => entry.index === targetIndex);
+    return match?.element ?? null;
+  }
+
+  function getVisibleMessageEntriesWithIndices() {
     const visibleEntries = getHumanMessages().map(messageEl => ({
       element: messageEl,
       id: getMessageId(messageEl),
       text: getMessageText(messageEl),
     }));
-
+    const matchedEntries = [];
     let searchStart = 0;
+
     for (const entry of visibleEntries) {
       let matchedIndex = -1;
 
@@ -247,12 +258,10 @@
       if (matchedIndex < 0) continue;
       searchStart = matchedIndex + 1;
 
-      if (matchedIndex === targetIndex) {
-        return entry.element;
-      }
+      matchedEntries.push({ ...entry, index: matchedIndex });
     }
 
-    return null;
+    return matchedEntries;
   }
 
   function syncVisibleDataMessageAnchors() {
@@ -956,6 +965,7 @@
 
   function renderStatus(message) {
     setSidebarStatus(message);
+    setActiveNavIndex(-1);
     const list = sidebar?.querySelector('#cgpt-nav-list');
     if (!list) return;
     list.innerHTML = '';
@@ -968,6 +978,135 @@
 
   function getSidebarStatusText() {
     return sidebar?.querySelector('#cgpt-nav-list .cgpt-nav-empty')?.textContent?.trim() ?? '';
+  }
+
+  function setActiveNavIndex(index) {
+    if (activeNavIndex === index) return;
+
+    const previous = sidebar?.querySelector('.cgpt-nav-item.cgpt-nav-active');
+    if (previous) {
+      previous.classList.remove('cgpt-nav-active');
+      previous.removeAttribute('aria-current');
+    }
+
+    activeNavIndex = index;
+    const next = sidebar?.querySelector(`.cgpt-nav-item[data-cgpt-nav-index="${index}"]`);
+    if (next) {
+      next.classList.add('cgpt-nav-active');
+      next.setAttribute('aria-current', 'true');
+    }
+  }
+
+  function estimateActiveNavIndexFromScroll(container) {
+    if (messageData.length === 0) return -1;
+
+    const anchorPoint = container.scrollTop + Math.floor(container.clientHeight * 0.35);
+    let bestIndex = -1;
+    let bestTop = -Infinity;
+
+    messageData.forEach((message, index) => {
+      const top = typeof message.anchorTop === 'number'
+        ? message.anchorTop
+        : message.scrollTop;
+      if (typeof top !== 'number') return;
+      if (top <= anchorPoint && top >= bestTop) {
+        bestIndex = index;
+        bestTop = top;
+      }
+    });
+
+    if (bestIndex >= 0) return bestIndex;
+    return messageData.findIndex(message =>
+      typeof message.anchorTop === 'number' || typeof message.scrollTop === 'number'
+    );
+  }
+
+  function getScrollContainerViewportRect(container) {
+    if (container === document.documentElement || container === document.body) {
+      return {
+        top: 0,
+        bottom: window.innerHeight,
+        height: window.innerHeight,
+      };
+    }
+    return container.getBoundingClientRect();
+  }
+
+  function getScrollListenerTarget(container) {
+    if (container === document.documentElement || container === document.body) {
+      return window;
+    }
+    return container;
+  }
+
+  function updateScrollHighlight() {
+    if (!sidebar?.classList.contains('cgpt-nav-visible')) return;
+    if (messageData.length === 0) {
+      setActiveNavIndex(-1);
+      return;
+    }
+
+    const container = findScrollContainer();
+    const containerRect = getScrollContainerViewportRect(container);
+    const activationY = containerRect.top + Math.min(
+      Math.max(Math.floor(containerRect.height * 0.35), 120),
+      Math.floor(containerRect.height * 0.6)
+    );
+    const visibleEntries = getVisibleMessageEntriesWithIndices();
+
+    let nextIndex = -1;
+    for (const entry of visibleEntries) {
+      const rect = entry.element.getBoundingClientRect();
+      if (rect.bottom < containerRect.top || rect.top > containerRect.bottom) continue;
+      if (rect.top <= activationY) {
+        nextIndex = entry.index;
+      } else if (nextIndex < 0) {
+        nextIndex = entry.index;
+        break;
+      }
+    }
+
+    if (nextIndex < 0) {
+      nextIndex = estimateActiveNavIndexFromScroll(container);
+    }
+    setActiveNavIndex(nextIndex);
+  }
+
+  function requestScrollHighlightUpdate() {
+    if (scrollHighlightFrame !== null) return;
+    scrollHighlightFrame = requestAnimationFrame(() => {
+      scrollHighlightFrame = null;
+      updateScrollHighlight();
+    });
+  }
+
+  function watchScrollHighlight() {
+    const container = findScrollContainer();
+    const target = getScrollListenerTarget(container);
+    if (scrollHighlightContainer === container) {
+      requestScrollHighlightUpdate();
+      return;
+    }
+
+    if (scrollHighlightTarget) {
+      scrollHighlightTarget.removeEventListener('scroll', requestScrollHighlightUpdate);
+    }
+    scrollHighlightContainer = container;
+    scrollHighlightTarget = target;
+    scrollHighlightTarget.addEventListener('scroll', requestScrollHighlightUpdate, { passive: true });
+    requestScrollHighlightUpdate();
+  }
+
+  function stopScrollHighlight() {
+    if (scrollHighlightTarget) {
+      scrollHighlightTarget.removeEventListener('scroll', requestScrollHighlightUpdate);
+      scrollHighlightTarget = null;
+    }
+    scrollHighlightContainer = null;
+    if (scrollHighlightFrame !== null) {
+      cancelAnimationFrame(scrollHighlightFrame);
+      scrollHighlightFrame = null;
+    }
   }
 
   function shouldRetryVisibleSidebar() {
@@ -1036,6 +1175,7 @@
     if (sidebarShouldBeVisible) {
       sidebar.classList.add('cgpt-nav-visible');
       toggle.classList.add('cgpt-nav-active');
+      watchScrollHighlight();
       if ((sidebarWasMissing || toggleWasMissing) && messageData.length > 0) {
         buildSidebar();
       }
@@ -1057,6 +1197,7 @@
     setSidebarStatus('');
     resetDebugLogs();
     messageData = [];
+    setActiveNavIndex(-1);
     lastObservedDataMutationSignature = '';
     lastConsumedObservedRequestAt = null;
 
@@ -1565,6 +1706,9 @@
     const list = sidebar.querySelector('#cgpt-nav-list');
     const previousScrollTop = list.scrollTop;
     list.innerHTML = '';
+    if (sidebar.classList.contains('cgpt-nav-visible')) {
+      watchScrollHighlight();
+    }
     seedBoundaryAnchors();
 
     const clearAnchorsBtn = sidebar.querySelector('.cgpt-nav-header-btn');
@@ -1587,6 +1731,11 @@
       const item = document.createElement('button');
       item.className = 'cgpt-nav-item';
       item.title = text.trim();
+      item.dataset.cgptNavIndex = String(i);
+      if (i === activeNavIndex) {
+        item.classList.add('cgpt-nav-active');
+        item.setAttribute('aria-current', 'true');
+      }
 
       const num = document.createElement('span');
       num.className = 'cgpt-nav-num';
@@ -1619,6 +1768,7 @@
     }
 
     list.scrollTop = previousScrollTop;
+    updateScrollHighlight();
   }
 
   function createSidebar() {
@@ -1699,6 +1849,7 @@
     sidebarShouldBeVisible = true;
     sidebar.classList.add('cgpt-nav-visible');
     toggle.classList.add('cgpt-nav-active');
+    watchScrollHighlight();
 
     if (isScanning) {
       if (messageData.length > 0) {
@@ -1745,6 +1896,7 @@
     sidebarShouldBeVisible = false;
     sidebar.classList.remove('cgpt-nav-visible');
     toggle.classList.remove('cgpt-nav-active');
+    stopScrollHighlight();
   }
 
   async function loadAutoShowPreference() {

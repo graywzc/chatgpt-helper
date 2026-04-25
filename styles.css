@@ -144,7 +144,8 @@
   width: 100%;
 }
 
-.cgpt-nav-item:hover {
+.cgpt-nav-item:hover,
+.cgpt-nav-item.cgpt-nav-active {
   background: #313244;
   border-color: #45475a;
 }
